@@ -20,6 +20,53 @@ from motion_inbetween.train import context_model as ctx_mdl
 from motion_inbetween.train import detail_model as det_mdl
 from motion_inbetween.data import utils_torch as data_utils
 
+import numpy as np
+def remove_joint(joint:int, pos:torch.Tensor, rot:torch.Tensor, parents:np.ndarray, change_parents:bool=False):
+    '''
+    tests on seeing if i can remove a joint from the data
+    '''
+
+    affected_joints = [joint]
+    found_joints = []
+    while True:
+        found = False
+        for i in range(len(parents)):
+            if parents[i] in affected_joints and i not in found_joints:
+                affected_joints.append(i)
+                found_joints.append(i)
+                found = True
+                break 
+        if not found:
+            break
+    affected_joints = affected_joints[1:]
+    print(f"Affected joints: {affected_joints}")
+
+    pos = pos.cpu().clone()
+
+    # not sure how to make the children of the removed joints be in the same position from before the removal
+    joint_pos = pos[:, :, joint, :]
+    for j in affected_joints:
+        pos[:, :, j, :] += joint_pos
+    pos = torch.cat([pos[:, :, :joint, :], pos[:, :, joint+1:, :]], dim=2)
+    
+
+    rot = rot.cpu().clone()
+
+    # not sure how to make the children of the removed joints be in the same rotation from before the removal
+    # joint_rot = rot[:, :, joint, :, :]
+    # for j in affected_joints:
+    #     rot[:, :, j, :] = torch.matmul(joint_rot, rot[:, :, j, :])
+    rot = torch.cat([rot[:, :, :joint, :, :], rot[:, :, joint+1:, :, :]], dim=2)
+
+    if change_parents:
+        parents = parents.copy()
+        for i in range(len(parents)):
+            if parents[i] == joint:
+                parents[i] = -42
+            elif parents[i] > joint:
+                parents[i] -= 1
+        parents = parents[parents != -42]
+    return pos, rot, parents
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate detail model. "
@@ -127,13 +174,23 @@ if __name__ == "__main__":
             gpos_batch_loss[0], gquat_batch_loss[0],
             " (w/ post-processing)" if args.post_processing else ""))
 
-        json_path_gt = "./{}_{}_{}_{}_gt.json".format(
+        json_path_gt = "./test_{}_{}_{}_{}_gt.json".format(
             args.det_config, args.dataset, args.trans, args.index)
         visualization.save_data_to_json(
             json_path_gt, positions[0], rotations[0],
             foot_contact[0], parents)
 
-        json_path = "./{}_{}_{}_{}.json".format(
+        print(pos_new.shape)
+        print(rot_new.shape)
+        print(foot_contact_new.shape)
+        print(parents)
+        pos_new, rot_new, parents = remove_joint(2, pos_new, rot_new, parents, change_parents=True)
+        print(pos_new.shape)
+        print(rot_new.shape)
+        print(foot_contact_new.shape)
+        print(parents)
+
+        json_path = "./test_{}_{}_{}_{}.json".format(
             args.det_config, args.dataset, args.trans, args.index)
         visualization.save_data_to_json(
             json_path, pos_new[0], rot_new[0],

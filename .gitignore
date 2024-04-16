@@ -142,3 +142,7 @@ cython_debug/
 
 /datasets
 /scripts/*.json
+
+# models
+*.pkl
+*.pth
