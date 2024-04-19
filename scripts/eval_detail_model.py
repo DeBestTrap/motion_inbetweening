@@ -36,6 +36,10 @@ if __name__ == "__main__":
                         help="debug mode")
     parser.add_argument("-p", "--post_processing", action="store_true",
                         default=False, help="apply post-processing")
+    parser.add_argument("-sj", "--save_json", action="store_true",
+                        default=False, help="save outputs to json file")
+    parser.add_argument("-j", "--json_outputs", type=str, default=None,
+                        help="outputs of a model stored in a json file")
 
     args = parser.parse_args()
 
@@ -56,7 +60,7 @@ if __name__ == "__main__":
     if args.index is None:
         res = det_mdl.eval_on_dataset(
             det_config, data_loader, detail_model, context_model,
-            args.trans, args.debug, args.post_processing)
+            args.trans, args.debug, args.post_processing, args.save_json, args.json_outputs)
 
         if args.debug:
             gpos_loss, gquat_loss, npss_loss, loss_data = res
@@ -73,6 +77,10 @@ if __name__ == "__main__":
             args.trans, gpos_loss, gquat_loss, npss_loss,
             " (w/ post-processing)" if args.post_processing else ""))
     else:
+        if args.json_outputs is not None:
+            exit(1, "json_outputs is not currently supported for individual visualization")
+        if args.save_json:
+            exit(1, "save_json is not currently supported for individual visualization")
         indices = det_config["indices"]
         context_len = det_config["train"]["context_len"]
         target_idx = context_len + args.trans

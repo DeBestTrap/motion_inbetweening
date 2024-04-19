@@ -2,6 +2,7 @@ import os
 import math
 import pickle
 import random
+import json
 import numpy as np
 
 import torch
@@ -14,7 +15,7 @@ from motion_inbetween.train import rmi
 from motion_inbetween.train import utils as train_utils
 from motion_inbetween.train import context_model as ctx_mdl
 from motion_inbetween.benchmark import get_rmi_style_batch_loss
-
+from motion_inbetween.visualization import save_data_to_json
 
 def get_model_input(positions, rotations):
     """
@@ -428,7 +429,23 @@ def train(config, context_config):
 
 
 def eval_on_dataset(config, data_loader, detail_model, context_model,
-                    trans_len, debug=False, post_process=True):
+                    trans_len, debug=False, post_process=True, save_json=False,
+                    json_outputs=None):
+    '''
+    save_json (bool): Saves the ground truth and predicted data to a json file.
+        positions (clips, frames, joints, 3)
+        rotations (clips, frames, joints, 3, 3)
+        foot_contact (clips, frames, 4)
+        parents (joints,)
+    
+    json_outputs (str): Path to a json file containing a predicted animation to
+    compare with the animations in the data_loader. The predicted animation
+    should have the same format as listed above.
+    '''
+    if save_json is True and json_outputs is not None:
+        raise ValueError(
+            "save_json and json_outputs cannot be used at the same time!")
+
     device = data_loader.dataset.device
     dtype = data_loader.dataset.dtype
 
@@ -457,6 +474,18 @@ def eval_on_dataset(config, data_loader, detail_model, context_model,
     npss_loss = []
     npss_weights = []
 
+    if save_json:
+        all_pos = []
+        all_rot = []
+        all_pos_new = []
+        all_rot_new = []
+        all_foot_contact = []
+    if json_outputs is not None:
+        new_results = json.load(open(json_outputs, "r"))
+        print("Loaded results from {}".format(json_outputs))
+        all_pos_new = torch.tensor(new_results["positions"], device=device)
+        all_rot_new = torch.tensor(new_results["rotations"], device=device)
+
     for i, data in enumerate(data_loader, 0):
         (positions, rotations, global_positions, global_rotations,
             foot_contact, parents, data_idx) = data
@@ -471,10 +500,14 @@ def eval_on_dataset(config, data_loader, detail_model, context_model,
         positions, rotations = data_utils.to_start_centered_data(
             positions, rotations, context_len)
 
-        pos_new, rot_new, _ = evaluate(
-            detail_model, context_model, positions, rotations, foot_contact,
-            seq_slice, indices, mean_ctx, std_ctx, mean_state, std_state,
-            atten_mask, atten_mask_ctx, post_process)
+        if json_outputs is None:
+            pos_new, rot_new, _ = evaluate(
+                detail_model, context_model, positions, rotations, foot_contact,
+                seq_slice, indices, mean_ctx, std_ctx, mean_state, std_state,
+                atten_mask, atten_mask_ctx, post_process)
+        else:
+            pos_new = all_pos_new[i*data_loader.batch_size : (i+1)*data_loader.batch_size, :, :]
+            rot_new = all_rot_new[i*data_loader.batch_size : (i+1)*data_loader.batch_size, :, :, :]
 
         (gpos_batch_loss, gquat_batch_loss,
          npss_batch_loss, npss_batch_weights) = get_rmi_style_batch_loss(
@@ -486,6 +519,27 @@ def eval_on_dataset(config, data_loader, detail_model, context_model,
         npss_loss.append(npss_batch_loss)
         npss_weights.append(npss_batch_weights)
         data_indexes.extend(data_idx.tolist())
+
+        if save_json:
+            all_pos.append(positions)
+            all_rot.append(rotations)
+            all_pos_new.append(pos_new)
+            all_rot_new.append(rot_new)
+            all_foot_contact.append(foot_contact)
+
+    if save_json:
+        all_pos = torch.cat(all_pos, dim=0)
+        all_rot = torch.cat(all_rot, dim=0)
+        all_pos_new = torch.cat(all_pos_new, dim=0)
+        all_rot_new = torch.cat(all_rot_new, dim=0)
+        all_foot_contact = torch.cat(all_foot_contact, dim=0)
+
+        json_path = f"./lafan1_detail_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}_gt.json"
+        save_data_to_json(json_path, all_pos, all_rot, all_foot_contact, parents)
+
+        json_path = f"./lafan1_detail_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}.json"
+        save_data_to_json(json_path, all_pos_new, all_rot_new, all_foot_contact, parents)
+
 
     gpos_loss = np.concatenate(gpos_loss, axis=0)
     gquat_loss = np.concatenate(gquat_loss, axis=0)
