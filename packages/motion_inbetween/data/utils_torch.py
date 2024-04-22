@@ -1,7 +1,7 @@
+# %%
 import numpy as np
 import torch
 import torch.nn.functional as F
-
 
 def batch_vector_dot_torch(vec1, vec2):
     """

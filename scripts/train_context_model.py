@@ -18,4 +18,5 @@ if __name__ == "__main__":
 
     config = load_config_by_name(args.config)
     config.save_to_workspace()
-    context_model.train(config)
+    # context_model.train(config)
+    context_model.train_rep1(config)

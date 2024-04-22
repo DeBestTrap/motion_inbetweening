@@ -42,3 +42,12 @@ def save_data_to_json(json_path, positions, rotations, foot_contact,
                 data["global_rotations"] = global_rotations.tolist()
 
         json.dump(data, fh)
+
+def save_rep1_data_to_json(json_path, rep1, foot_contact, parents):
+    with open(json_path, "w") as fh:
+        data = {
+            "rep1": rep1.tolist(),
+            "foot_contact": foot_contact.tolist(),
+            "parents": parents.tolist(),
+        }
+        json.dump(data, fh)

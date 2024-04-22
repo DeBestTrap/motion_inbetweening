@@ -34,6 +34,12 @@ if __name__ == "__main__":
                         help="debug mode")
     parser.add_argument("-p", "--post_processing", action="store_true",
                         default=False, help="apply post-processing")
+    parser.add_argument("-sj", "--save_json", action="store_true",
+                        default=False, help="save outputs to json file")
+    parser.add_argument("-j", "--json_outputs", type=str, default=None,
+                        help="outputs of a model stored in a json file")
+    parser.add_argument("-r", "--rep1", action="store_true",
+                        help="use rep1 model")
     args = parser.parse_args()
 
     config = load_config_by_name(args.config)
@@ -47,9 +53,15 @@ if __name__ == "__main__":
     epoch, iteration = train_utils.load_checkpoint(config, model)
 
     if args.index is None:
-        res = context_model.eval_on_dataset(
-            config, data_loader, model, args.trans, args.debug,
-            args.post_processing)
+        if args.rep1:
+            res = context_model.eval_on_dataset_rep1(
+                config, data_loader, model, args.trans, args.debug,
+                args.post_processing, args.save_json, args.json_outputs)
+            exit(0)
+        else:
+            res = context_model.eval_on_dataset(
+                config, data_loader, model, args.trans, args.debug,
+                args.post_processing, args.save_json, args.json_outputs)
 
         if args.debug:
             gpos_loss, gquat_loss, npss_loss, loss_data = res

@@ -429,8 +429,8 @@ def train(config, context_config):
 
 
 def eval_on_dataset(config, data_loader, detail_model, context_model,
-                    trans_len, debug=False, post_process=True, save_json=False,
-                    json_outputs=None):
+                    trans_len, debug=False, post_process=True, 
+                    save_json=False, json_outputs=None):
     '''
     save_json (bool): Saves the ground truth and predicted data to a json file.
         positions (clips, frames, joints, 3)
