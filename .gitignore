@@ -146,6 +146,8 @@ cython_debug/
 # models
 *.pkl
 *.pth
+*.pth.*
+experiments/*/*.json
 
 ignore/
 

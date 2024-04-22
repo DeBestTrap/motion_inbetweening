@@ -30,6 +30,9 @@ def get_model_input_rep1(rep1):
     #    only 8 joints are used, so we can ignore the rest
     #    1 root rotation, 7 euler angles
     # return (batch, seq, eulers*3+3) <-> (batch, seq, 24)
+    # return (batch, seq, eulers*3+6) <-> (batch, seq, 27)
+    # 
+    # the conversion back may be
     rm1 = dr.get_representation1_mapping()
     wanted_indices = [
         rm1["left hand"],
@@ -40,20 +43,23 @@ def get_model_input_rep1(rep1):
         rm1["spine top"],
         rm1["root"],
     ]
-    root_rot = rep1[:, :, rm1["root rotation"]]
+    # root_rot = rep1[:, :, rm1["root rotation"]]
+    # root_rot_9D_flat = dr.euler_to_matrix_vectorized_torch(root_rot.reshape(-1, 3), device=root_rot.device, dtype=root_rot.dtype)
+    # root_rot_9D = root_rot_9D_flat.reshape(root_rot.shape[0], root_rot.shape[1], 1, 3, 3)
+    root_rot_9D = dr.representation1_backwards_rot_torch(rep1, device=rep1.device, dtype=rep1.dtype).reshape(rep1.shape[0], rep1.shape[1], 1, 3, 3)
+    root_rot_6D = data_utils.matrix9D_to_6D_torch(root_rot_9D)
+    # print(root_rot_6D.shape)
+    # print(root_rot_6D.flatten(start_dim=-2).shape)
+
     euler_pos = rep1[:, :, wanted_indices]
     euler_pos_flat = euler_pos.reshape(euler_pos.shape[0], euler_pos.shape[1], -1)
-    x = torch.cat([root_rot, euler_pos_flat], dim=-1)
-
-    # Starting to implement 6D representation instead of euler angles
-    # root_rot_9D = dr.euler_to_matrix9D_torch(root_rot)
-    # root_rot_6D = data_utils.matrix9D_to_6D_torch(root_rot_9D)
-
+    x = torch.cat([root_rot_6D.flatten(start_dim=-2), euler_pos_flat], dim=-1)
     return x
 
 
 def x_to_rep1(x, device):
     # x (batch, seq, eulers*3+3) <-> (batch, seq, 24, 3)
+    # x (batch, seq, eulers*3+6) <-> (batch, seq, 27, 3)
     # returns (batch, seq, 22, 3)
     rep1 = torch.zeros(x.shape[0], x.shape[1], 22, 3, dtype=x.dtype).to(device)
     rm1 = dr.get_representation1_mapping()
@@ -66,9 +72,12 @@ def x_to_rep1(x, device):
         rm1["spine top"],
         rm1["root"],
     ]
-    root_rot = x[:, :, :3]
+    # root_rot = x[:, :, :3]
+    root_rot_6D = x[:, :, :6]
+    root_rot_9D = data_utils.matrix6D_to_9D_torch(root_rot_6D).reshape(x.shape[0], x.shape[1], 1, 3, 3)
+    root_rot = dr.m9dtoeuler_torch(root_rot_9D, device=device, dtype=x.dtype)
     rep1[:, :, rm1["root rotation"]] = root_rot
-    euler_pos_flat = x[:, :, 3:]
+    euler_pos_flat = x[:, :, 6:]
     euler_pos = euler_pos_flat.reshape(euler_pos_flat.shape[0], euler_pos_flat.shape[1], -1, 3)
     rep1[:, :, wanted_indices] = euler_pos
     return rep1
@@ -844,8 +853,7 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
     rep1_mask = torch.tensor(dr.representation1_partial_mask()[:, np.newaxis], dtype=dtype, device=device)
 
     if save_json:
-        all_positions = []
-        all_rotations = []
+        all_rep1 = []
         all_rep1_new = []
         all_foot_contact = []
 
@@ -883,21 +891,19 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
         data_indexes.extend(data_idx.tolist())
 
         if save_json:
-            all_positions.append(positions.cpu().numpy())
-            all_rotations.append(rotations.cpu().numpy())
+            all_rep1.append(rep1.cpu().numpy())
             all_rep1_new.append(rep1_new.cpu().numpy())
             all_foot_contact.append(foot_contact.cpu().numpy())
     
     if save_json:
-        all_positions = np.concatenate(all_positions, axis=0)
-        all_rotations = np.concatenate(all_rotations, axis=0)
+        all_rep1 = np.concatenate(all_rep1, axis=0)
         all_rep1_new = np.concatenate(all_rep1_new, axis=0)
         all_foot_contact = np.concatenate(all_foot_contact, axis=0)
 
-        json_path = f"./lafan1_context_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}_gt.json"
-        save_data_to_json(json_path, positions, rotations, all_foot_contact, parents)
+        json_path = f"./{config['name']}_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}_gt.json"
+        save_rep1_data_to_json(json_path, all_rep1, all_foot_contact, parents)
 
-        json_path = f"./new_rep_lafan1_context_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}.json"
+        json_path = f"./{config['name']}_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}.json"
         save_rep1_data_to_json(json_path, all_rep1_new, all_foot_contact, parents)
 
     return np.mean(r_losses), np.mean(p_losses), np.mean(smooth_losses)
