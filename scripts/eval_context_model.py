@@ -57,6 +57,11 @@ if __name__ == "__main__":
             res = context_model.eval_on_dataset_rep1(
                 config, data_loader, model, args.trans, args.debug,
                 args.post_processing, args.save_json, args.json_outputs)
+            gpos_loss, gquat_loss, npss_loss = res
+            print(config["name"])
+            print("trans {}: gpos: {:.4f}, gquat: {:.4f}, npss: {:.4f}{}".format(
+                args.trans, gpos_loss, gquat_loss, npss_loss,
+                " (w/ post-processing)" if args.post_processing else ""))
             exit(0)
         else:
             res = context_model.eval_on_dataset(

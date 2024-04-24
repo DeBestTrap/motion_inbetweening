@@ -337,3 +337,50 @@ def _get_interpolated_local_pos_quat(positions, rotations, seq_slice):
     quat = quat[..., 1: -1, :, :]
 
     return pos, quat
+
+def get_rmi_style_batch_loss_global(positions, rotations, global_pos_new, global_rot_new,
+                             parents, context_len, target_idx,
+                             mean_rmi, std_rmi):
+    seq_slice = slice(context_len, target_idx)
+
+    # Convert to mean centered data in order to be compatible
+    # to Robust Motion Inbetween metrics.
+
+    # Ground Truth ---------------------------------------------------------
+    positions, rotations, root_pos_offset, root_rot_offset = \
+        data_utils.to_mean_centered_data(positions, rotations, context_len,
+                                         return_offset=True)
+    global_rotations, global_positions = data_utils.fk_torch(
+        rotations, positions, parents)
+
+    # gpos_zscore: (batch, seq, joint, 3)
+    # gquat: (batch, seq, joint, 4)
+    gpos_zscore = (global_positions - mean_rmi) / std_rmi
+    gquat = data_utils.matrix9D_to_quat_torch(global_rotations)
+    gquat = data_utils.remove_quat_discontinuities(gquat)
+
+    # Predicted ------------------------------------------------------------
+    # pos_new, rot_new = data_utils.apply_root_pos_rot_offset(
+    #     pos_new, rot_new, root_pos_offset, root_rot_offset)
+    # grot_new, gpos_new = data_utils.fk_torch(rot_new, pos_new, parents)
+
+    gpos_new_zscore = (global_pos_new - mean_rmi) / std_rmi
+    # gquat_new = data_utils.matrix9D_to_quat_torch(global_rot_new)
+    # gquat_new = data_utils.remove_quat_discontinuities(gquat_new)
+
+    # Loss -----------------------------------------------------------------
+    gpos_batch_loss = get_l2loss_batch(
+        gpos_zscore[..., seq_slice, :, :].flatten(-2),
+        gpos_new_zscore[..., seq_slice, :, :].flatten(-2))
+    # gquat_batch_loss = get_l2loss_batch(
+    #     gquat[..., seq_slice, :, :].flatten(-2),
+    #     gquat_new[..., seq_slice, :, :].flatten(-2))
+    # npss_batch_loss, npss_batch_weight = get_npss_loss_batch(
+    #     gquat[..., seq_slice, :, :].flatten(-2),
+    #     gquat_new[..., seq_slice, :, :].flatten(-2)
+    # )
+    gquat_batch_loss = 0
+    npss_batch_loss = 0
+    npss_batch_weight = 0
+
+    return gpos_batch_loss, gquat_batch_loss, npss_batch_loss, npss_batch_weight

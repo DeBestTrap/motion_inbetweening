@@ -27,6 +27,12 @@ def format_data(file_path):
     print(f'CONVERTED ORIGINAL DATA TO GLOBAL')
     return all_global_positions, all_global_rotations
 
+def read_rep1(file_path):
+    with open(file_path) as json_data:
+        d = json.load(json_data)
+
+    return d['rep1']
+
 
 """
 COORDINATE AND VECTOR MANIPULATION
@@ -79,12 +85,12 @@ def get_euler_from_vec_vectorized_torch(vec2, dtype, device, keep_length = False
     return torch.stack([yaw2, pitch2, roll2], axis=-1)
 
 
-def get_vec_from_euler(angle):
-    length = angle[2] / (6 / MAX_LENGTH)
-    
+def get_vec_from_euler(angle, length=-1):
+    if length == -1:
+        length = angle[2] / (6 / MAX_LENGTH)
     if length == 0:
         length = 1
-        
+
     y = np.cos(angle[1]) * np.sin(angle[0])
     z = np.sin(angle[1])
     x = np.cos(angle[1]) * np.cos(angle[0])
@@ -132,6 +138,12 @@ def m9dtoeuler_torch(m9d, dtype, device):
     pitch = -1*torch.asin(m9d[:, :, 0, 2, 0])
     roll = torch.atan2(m9d[:, :, 0, 2, 1] / torch.cos(pitch) , m9d[:, :, 0, 2, 2] / torch.cos(pitch))
     yaw = torch.atan2(m9d[:, :, 0, 1, 0] / torch.cos(pitch) , m9d[:, :, 0, 0, 0] / torch.cos(pitch))
+    return torch.stack((yaw, pitch, roll), axis=-1)
+
+def matrix_to_euler_torch(mat, dtype, device):
+    pitch = -1*torch.asin(mat[:, :, :, 2, 0])
+    roll = torch.atan2(mat[:, :, :, 2, 1] / torch.cos(pitch) , mat[:, :, :, 2, 2] / torch.cos(pitch))
+    yaw = torch.atan2(mat[:, :, :, 1, 0] / torch.cos(pitch) , mat[:, :, :, 0, 0] / torch.cos(pitch))
     return torch.stack((yaw, pitch, roll), axis=-1)
 
 def euler_to_matrix_vectorized(euler_angles):
@@ -270,6 +282,16 @@ def get_representation1_mapping():
     }
     return rm1
 
+def get_representation1_rotations_mapping():
+    rrm1 = {
+        'left elbow': 0,
+        'right elbow': 1,
+        'left knee': 2,
+        'right knee': 3,
+        'root rotation': 4,
+    }
+    return rrm1
+
 
 def make_converted_json(file_path, save_path):
     all_global_positions, all_global_rotations = format_data(file_path)
@@ -288,9 +310,12 @@ def make_converted_json(file_path, save_path):
     total_error = np.sum(np.abs(original_masked - partial_back))
     print(f'total error: {total_error}')
 
-    root_rot = representation1_backwards_rot(rep1)
-    total_error = np.sum(np.abs(all_global_rotations[:, :, 0, :, :] - root_rot))
-    print(f'total error: {total_error}')
+    # root_rot = representation1_backwards_rot(rep1)
+    # rotations = representation1_backwards_rot(rep1)
+    # rm1 = get_representation1_mapping()
+    # root_rot = rotations[:, :, rm1['root rotation']]
+    # total_error = np.sum(np.abs(all_global_rotations[:, :, 0, :, :] - root_rot))
+    # print(f'root_rot total error: {total_error}')
 
 """
 MAIN CONVERSION MODULES
@@ -327,29 +352,23 @@ def representation1_torch(rep0, root_angles, dtype, device):
     rep1 = torch.zeros((rep0.shape[0], rep0.shape[1], INDICES_IN_USE, 3), dtype=dtype, device=device)
     bm = get_bone_mapping()
     rm1 = get_representation1_mapping()
-    
-    pull_target_dist_multiplier = 4
 
     root_location = rep0[:, :, bm['root']]
-
-    # elbow and knee pull targets are stored relative to the hands/foot, not the root!
-    rep1[:,:, rm1['left hand']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['left hand']] - root_location, dtype, device, True)
-    left_arm_mid = 0.5 * rep0[:,:, bm['left hand']] + 0.5 * rep0[:,:, bm['left shoulder']]
-    rep1[:,:, rm1['left elbow']] = get_euler_from_vec_vectorized_torch(pull_target_dist_multiplier * (rep0[:,:, bm['left elbow']] - left_arm_mid) + left_arm_mid - rep0[:,:, bm['left hand']], dtype, device, True)
+    left_arm_angle, right_arm_angle, left_knee_angle, right_knee_angle = get_pull_target_rotations(rep0, dtype, device)
 
     # hands
+    rep1[:,:, rm1['left hand']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['left hand']] - root_location, dtype, device, True)
+    rep1[:,:, rm1['left elbow']] = left_arm_angle
+
     rep1[:,:, rm1['right hand']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['right hand']] - root_location, dtype, device, True)
-    right_arm_mid = 0.5 * rep0[:,:, bm['right hand']] + 0.5 * rep0[:,:, bm['right shoulder']]
-    rep1[:,:, rm1['right elbow']] = get_euler_from_vec_vectorized_torch(pull_target_dist_multiplier * (rep0[:,:, bm['right elbow']] - right_arm_mid) + right_arm_mid - rep0[:,:, bm['right hand']], dtype, device, True)
+    rep1[:,:, rm1['right elbow']] = right_arm_angle
 
     # feet
     rep1[:,:, rm1['left foot']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['left foot']] - root_location, dtype, device, True)
-    left_leg_mid = 0.5 * rep0[:,:, bm['left foot']] + 0.5 * rep0[:,:, bm['left hip']]
-    rep1[:,:, rm1['left knee']] = get_euler_from_vec_vectorized_torch(pull_target_dist_multiplier * (rep0[:,:, bm['left knee']] - left_leg_mid) + left_leg_mid - rep0[:,:, bm['left foot']], dtype, device, True)
+    rep1[:,:, rm1['left knee']] = left_knee_angle
     
     rep1[:,:, rm1['right foot']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['right foot']] - root_location, dtype, device, True)
-    right_leg_mid = 0.5 * rep0[:,:, bm['right foot']] + 0.5 * rep0[:,:, bm['right hip']]
-    rep1[:,:, rm1['right knee']] = get_euler_from_vec_vectorized_torch(pull_target_dist_multiplier * (rep0[:,:, bm['right knee']] - right_leg_mid) + right_leg_mid - rep0[:,:, bm['right foot']], dtype, device, True)
+    rep1[:,:, rm1['right knee']] = right_knee_angle
 
     # joints and root
     rep1[:,:, rm1['spine top']] = get_euler_from_vec_vectorized_torch(rep0[:,:, bm['spine top']] - root_location, dtype, device, True)
@@ -357,6 +376,67 @@ def representation1_torch(rep0, root_angles, dtype, device):
     rep1[:,:, rm1['root']] = get_euler_from_vec_vectorized_torch(root_location, dtype, device, True)
     rep1[:,:, rm1['root rotation']] = m9dtoeuler_torch(root_angles, dtype, device)
     return rep1
+
+
+def get_pull_target_positions(rep0):
+    """
+    copmutes the location in which pull targets are assigned such that knees and elbows will face the correct orientation
+    """
+    pull_target_dist_multiplier = 4
+    bm = get_bone_mapping()
+
+    left_arm_mid = 0.5 * rep0[:,:, bm['left hand']] + 0.5 * rep0[:,:, bm['left shoulder']]
+    left_elbow_target = pull_target_dist_multiplier * (rep0[:,:, bm['left elbow']] - left_arm_mid) + left_arm_mid
+
+    right_arm_mid = 0.5 * rep0[:,:, bm['right hand']] + 0.5 * rep0[:,:, bm['right shoulder']]
+    right_elbow_target = pull_target_dist_multiplier * (rep0[:,:, bm['right elbow']] - right_arm_mid) + right_arm_mid
+
+    left_leg_mid = 0.5 * rep0[:,:, bm['left foot']] + 0.5 * rep0[:,:, bm['left hip']]
+    left_knee_target = pull_target_dist_multiplier * (rep0[:,:, bm['left knee']] - left_leg_mid) + left_leg_mid
+    #left_knee_target = rep0[:,:, bm['left toe']] - rep0[:,:, bm['left toe']] 
+
+    right_leg_mid = 0.5 * rep0[:,:, bm['right foot']] + 0.5 * rep0[:,:, bm['right hip']]
+    right_knee_target = pull_target_dist_multiplier * (rep0[:,:, bm['right knee']] - right_leg_mid) + right_leg_mid
+
+    return left_elbow_target, right_elbow_target, left_knee_target, right_knee_target
+
+
+def get_pull_target_rotations(rep0, dtype, device):
+    """
+    computes the angle describing the location of the pull target relative to the pseudo midpoint (midpoint between hands/feet and spine top/root)
+    """
+    bm = get_bone_mapping()
+    left_elbow_target, right_elbow_target, left_knee_target, right_knee_target = get_pull_target_positions(rep0)
+
+    left_arm_pseudo_mid = 0.5 * rep0[:,:, bm['left hand']] + 0.5 * rep0[:,:, bm['spine top']] # this is the position that can be solved by partial backwards
+    left_elbow_pull_angle = get_euler_from_vec_vectorized_torch(left_elbow_target - left_arm_pseudo_mid, dtype, device)
+
+    right_arm_pseudo_mid = 0.5 * rep0[:,:, bm['right hand']] + 0.5 * rep0[:,:, bm['spine top']]
+    right_elbow_pull_angle = get_euler_from_vec_vectorized_torch(right_elbow_target - right_arm_pseudo_mid, dtype, device)
+
+    left_leg_pseudo_mid = 0.5 * rep0[:,:, bm['left foot']] + 0.5 * rep0[:,:, bm['root']]
+    left_knee_pull_angle = get_euler_from_vec_vectorized_torch(left_knee_target - left_leg_pseudo_mid, dtype, device)
+
+    right_leg_pseudo_mid = 0.5 * rep0[:,:, bm['right foot']] + 0.5 * rep0[:,:, bm['root']]
+    right_knee_pull_angle = get_euler_from_vec_vectorized_torch(right_knee_target - right_leg_pseudo_mid, dtype, device)
+
+    return left_elbow_pull_angle, right_elbow_pull_angle, left_knee_pull_angle, right_knee_pull_angle
+
+
+def representation0_injection(rep0, dtype, device):
+    """
+    Instead of ground truth contaiing knee/elbow positions, the pull target angles are stored instead. This is because our model directly outputs pull target angles
+    rather than the positions of elbows/knees.
+    """
+    bm = get_bone_mapping()
+    left_arm_angle, right_arm_angle, left_knee_angle, right_knee_angle = get_pull_target_rotations(rep0, dtype, device)
+
+    rep0[:, :, bm['left elbow']] = left_arm_angle
+    rep0[:, :, bm['right elbow']] = right_arm_angle
+    rep0[:, :, bm['left knee']] = left_knee_angle
+    rep0[:, :, bm['right knee']] = right_knee_angle
+
+    return rep0
 
     
 def representation1_backwards_partial(rep1):
@@ -374,10 +454,14 @@ def representation1_backwards_partial_torch(rep1, dtype, device):
 
     #hands
     rep0[:, :, bm['left hand']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['left hand']], dtype, device) + root_location
+    rep0[:, :, bm['left elbow']] = rep1[:, :, rm1['left elbow']]
     rep0[:, :, bm['right hand']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['right hand']], dtype, device) + root_location
+    rep0[:, :, bm['right elbow']] = rep1[:, :, rm1['right elbow']]
 
     rep0[:, :, bm['left foot']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['left foot']], dtype, device) + root_location
+    rep0[:, :, bm['left knee']] = rep1[:, :, rm1['left knee']]
     rep0[:, :, bm['right foot']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['right foot']], dtype, device) + root_location
+    rep0[:, :, bm['right knee']] = rep1[:, :, rm1['right knee']]
 
     rep0[:, :, bm['head']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['head']], dtype, device) + root_location
     rep0[:, :, bm['spine top']] = get_vec_from_euler_vectorized_torch(rep1[:, :, rm1['spine top']], dtype, device) + root_location
@@ -392,16 +476,23 @@ def representation1_backwards_rot(rep1):
 
 def representation1_backwards_rot_torch(rep1, dtype, device):
     rm1 = get_representation1_mapping()
-    root_rot_euler = rep1[:, :, rm1["root rotation"]].reshape(-1, 3)
-    root_rot_9D = euler_to_matrix_vectorized_torch(root_rot_euler, dtype, device).reshape(rep1.shape[0], rep1.shape[1], 3, 3)
-
-    return root_rot_9D
+    rot_indicies = [
+        rm1["left elbow"],
+        rm1["right elbow"],
+        rm1["left knee"],
+        rm1["right knee"],
+        rm1["root rotation"],
+    ]
+    rot_euler = rep1[:, :, rot_indicies]
+    rot_euler = rot_euler.reshape(-1, 3)
+    rot_9D = euler_to_matrix_vectorized_torch(rot_euler, dtype, device).reshape(rep1.shape[0], rep1.shape[1], len(rot_indicies), 3, 3)
+    return rot_9D
 
 def get_global_root_rot_from_rep1(rep1):
     rm1 = get_representation1_mapping()
     return rep1[:, :, rm1['root rotation']]
 
-def representation1_partial_mask():
+def representation1_partial_mask(use_ik_targets=True):
     bm = get_bone_mapping()
     mask = np.zeros((22,))
     mask[bm['left hand']] = 1
@@ -411,6 +502,12 @@ def representation1_partial_mask():
     mask[bm['head']] = 1
     mask[bm['spine top']] = 1
     mask[bm['root']] = 1
+
+    if use_ik_targets:
+        mask[bm['left elbow']] = 1
+        mask[bm['right elbow']] = 1
+        mask[bm['left knee']] = 1
+        mask[bm['right knee']] = 1
     return mask
 
 
@@ -428,6 +525,20 @@ if __name__ == "__main__":
 
     data_path = "/home/tyler/Desktop/Github/motion_inbetweening/scripts/ignore/"
     make_converted_json(data_path + file_name, data_path + save_name)
+
+def testing_rotations():
+    rep1 = torch.zeros(1, 1, 22, 3)
+    rm1 = get_representation1_mapping()
+    rep1[:, :, rm1["left elbow"]] = torch.ones(3)*0.1
+    rep1[:, :, rm1["right elbow"]] = torch.ones(3)*0.2
+    rep1[:, :, rm1["left knee"]] = torch.ones(3)*0.3
+    rep1[:, :, rm1["right knee"]] = torch.ones(3)*0.4
+    rep1[:, :, rm1["root rotation"]] = torch.ones(3)*0.5
+    print(rep1)
+    rot9D = representation1_backwards_rot_torch(rep1, torch.float64, 'cpu')
+    print(rot9D.shape)
+    euler_angles = matrix_to_euler_torch(rot9D, torch.float64, 'cpu')
+    print(euler_angles)
 
 
 # %%

@@ -30,15 +30,17 @@ def normalize_torch(tensor, dim=-1, eps=1e-5):
 def matrix9D_to_6D_torch(mat):
     """
     Convert 3x3 rotation matrix to 6D rotation representation.
-    Simply drop last column and flatten.
+    Simply drop last row and flatten.
 
+    # TODO messes with evaluation metrics
     Args:
         mat (Tensor): Input rotation matrix. Shape:(..., 3, 3)
 
     Returns:
         Tensor: Output matrix. Shape: (..., 6)
     """
-    return torch.flatten(mat[..., :-1], start_dim=-2)
+    # return torch.flatten(mat[..., :-1], start_dim=-2)
+    return torch.flatten(mat[..., :-1, :], start_dim=-2)
 
 
 def matrix6D_to_9D_torch(mat):
@@ -52,6 +54,7 @@ def matrix6D_to_9D_torch(mat):
     Raises:
         ValueError: Last dimension of mat is not 6.
 
+    # TODO messes with evaluation metrics
     Returns:
         Tensor: Output rotation matrix. Shape: (..., 3, 3)
     """
@@ -59,7 +62,10 @@ def matrix6D_to_9D_torch(mat):
         raise ValueError(
             "Last two dimension should be 6, got {0}.".format(mat.shape[-1]))
 
-    mat = mat.reshape(*mat.shape[:-1], 3, 2)
+    mat = mat.reshape(*mat.shape[:-1], 2, 3)
+
+    # transpose to (..., 3, 2)
+    mat = mat.transpose(-2, -1)
 
     # normalize column 0
     col0 = normalize_torch(mat[..., 0], dim=-1)
@@ -73,7 +79,10 @@ def matrix6D_to_9D_torch(mat):
 
     # calculate last column using cross product
     col2 = torch.cross(col0, col1, dim=-2)
-    return torch.cat([col0, col1, col2], dim=-1)
+    mat = torch.cat([col0, col1, col2], dim=-1)
+
+    # transpose last two dimensions to swap columns to rows
+    return mat.transpose(-2, -1)
 
 
 def extract_foot_vel(gpos, foot_joint_idx=(3, 4, 7, 8)):

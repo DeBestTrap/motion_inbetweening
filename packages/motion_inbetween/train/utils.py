@@ -275,3 +275,8 @@ def to_visdom(vis, info_idx, contents):
                 "title": win,
                 "showlegend": True
             })
+
+def update_elapsed_time_visdom(vis, elapsed_time):
+    vis.text(
+        "Elapsed time: {:.2f} s".format(elapsed_time),
+        win="elapsed_time", opts={"title": "Elapsed time"})

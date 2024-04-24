@@ -28,13 +28,12 @@ def get_model_input(positions, rotations):
 def get_model_input_rep1(rep1):
     # rotation: (batch, seq, 22, 3)
     #    only 8 joints are used, so we can ignore the rest
-    #    1 root rotation, 7 euler angles
-    # return (batch, seq, eulers*3+3) <-> (batch, seq, 24)
-    # return (batch, seq, eulers*3+6) <-> (batch, seq, 27)
+    #    1 root rotation, 4 ik target rotations,  7 euler angles
+    # return (batch, seq, rots*6+eulers*3) <-> (batch, seq, 51)
     # 
     # the conversion back may be
     rm1 = dr.get_representation1_mapping()
-    wanted_indices = [
+    euler_pos_indices = [
         rm1["left hand"],
         rm1["right hand"],
         rm1["left foot"],
@@ -43,27 +42,21 @@ def get_model_input_rep1(rep1):
         rm1["spine top"],
         rm1["root"],
     ]
-    # root_rot = rep1[:, :, rm1["root rotation"]]
-    # root_rot_9D_flat = dr.euler_to_matrix_vectorized_torch(root_rot.reshape(-1, 3), device=root_rot.device, dtype=root_rot.dtype)
-    # root_rot_9D = root_rot_9D_flat.reshape(root_rot.shape[0], root_rot.shape[1], 1, 3, 3)
-    root_rot_9D = dr.representation1_backwards_rot_torch(rep1, device=rep1.device, dtype=rep1.dtype).reshape(rep1.shape[0], rep1.shape[1], 1, 3, 3)
-    root_rot_6D = data_utils.matrix9D_to_6D_torch(root_rot_9D)
-    # print(root_rot_6D.shape)
-    # print(root_rot_6D.flatten(start_dim=-2).shape)
+    rots_9D = dr.representation1_backwards_rot_torch(rep1, device=rep1.device, dtype=rep1.dtype)
+    rots_6D = data_utils.matrix9D_to_6D_torch(rots_9D)
 
-    euler_pos = rep1[:, :, wanted_indices]
+    euler_pos = rep1[:, :, euler_pos_indices]
     euler_pos_flat = euler_pos.reshape(euler_pos.shape[0], euler_pos.shape[1], -1)
-    x = torch.cat([root_rot_6D.flatten(start_dim=-2), euler_pos_flat], dim=-1)
+    x = torch.cat([rots_6D.flatten(start_dim=-2), euler_pos_flat], dim=-1)
     return x
 
 
 def x_to_rep1(x, device):
-    # x (batch, seq, eulers*3+3) <-> (batch, seq, 24, 3)
-    # x (batch, seq, eulers*3+6) <-> (batch, seq, 27, 3)
+    # x (batch, seq, rots*6+eulers*3) <-> (batch, seq, 51, 3)
     # returns (batch, seq, 22, 3)
     rep1 = torch.zeros(x.shape[0], x.shape[1], 22, 3, dtype=x.dtype).to(device)
     rm1 = dr.get_representation1_mapping()
-    wanted_indices = [
+    euler_pos_indices = [
         rm1["left hand"],
         rm1["right hand"],
         rm1["left foot"],
@@ -72,14 +65,22 @@ def x_to_rep1(x, device):
         rm1["spine top"],
         rm1["root"],
     ]
-    # root_rot = x[:, :, :3]
-    root_rot_6D = x[:, :, :6]
-    root_rot_9D = data_utils.matrix6D_to_9D_torch(root_rot_6D).reshape(x.shape[0], x.shape[1], 1, 3, 3)
-    root_rot = dr.m9dtoeuler_torch(root_rot_9D, device=device, dtype=x.dtype)
-    rep1[:, :, rm1["root rotation"]] = root_rot
-    euler_pos_flat = x[:, :, 6:]
+    rots_indices = [
+        rm1["left elbow"],
+        rm1["right elbow"],
+        rm1["left knee"],
+        rm1["right knee"],
+        rm1["root rotation"]
+    ]
+    num_rots = len(rots_indices)
+    rots_6D = x[:, :, :num_rots*6]
+    rots_6D = x[:, :, :num_rots*6].reshape(x.shape[0], x.shape[1], -1, 6)
+    rots_9D = data_utils.matrix6D_to_9D_torch(rots_6D)
+    rots_euler = dr.matrix_to_euler_torch(rots_9D, device=device, dtype=x.dtype)
+    rep1[:, :, rots_indices] = rots_euler
+    euler_pos_flat = x[:, :, num_rots*6:]
     euler_pos = euler_pos_flat.reshape(euler_pos_flat.shape[0], euler_pos_flat.shape[1], -1, 3)
-    rep1[:, :, wanted_indices] = euler_pos
+    rep1[:, :, euler_pos_indices] = euler_pos
     return rep1
 
 
@@ -559,8 +560,9 @@ def train_rep1(config):
         dm1["spine top"],
         dm1["root"],
     ]
-    rep1_mask = torch.tensor(dr.representation1_partial_mask()[:, np.newaxis], dtype=dtype, device=device)
+    rep1_mask = torch.tensor(dr.representation1_partial_mask(use_ik_targets=False)[:, np.newaxis], dtype=dtype, device=device)
 
+    start_time = time.time()
     while epoch < config["train"]["total_epoch"]:
         for i, data in enumerate(data_loader, 0):
             (positions, rotations, global_positions, global_rotations,
@@ -651,6 +653,7 @@ def train_rep1(config):
                 vis.save([config["visdom"]["env"]])
 
             if iteration % info_interval == 0:
+                train_utils.update_elapsed_time_visdom(vis, time.time() - start_time)
                 r_loss_avg /= info_interval
                 p_loss_avg /= info_interval
                 smooth_loss_avg /= info_interval
@@ -746,7 +749,11 @@ def train_rep1(config):
 
 
 def eval_on_dataset(config, data_loader, model, trans_len,
-                    debug=False, post_process=True):
+                    debug=False, post_process=True,
+                    save_json=False, json_outputs=None):
+    if save_json is True and json_outputs is not None:
+        raise ValueError("save_json and json_outputs cannot be True at the same time")
+
     device = data_loader.dataset.device
     dtype = data_loader.dataset.dtype
 
@@ -769,6 +776,13 @@ def eval_on_dataset(config, data_loader, model, trans_len,
     gquat_loss = []
     npss_loss = []
     npss_weights = []
+
+    if save_json:
+        all_pos = []
+        all_rot = []
+        all_pos_new = []
+        all_rot_new = []
+        all_foot_contact = []
 
     for i, data in enumerate(data_loader, 0):
         (positions, rotations, global_positions, global_rotations,
@@ -801,6 +815,13 @@ def eval_on_dataset(config, data_loader, model, trans_len,
         npss_weights.append(npss_batch_weights)
         data_indexes.extend(data_idx.tolist())
 
+        if save_json:
+            all_pos.append(positions)
+            all_rot.append(rotations)
+            all_pos_new.append(pos_new)
+            all_rot_new.append(rot_new)
+            all_foot_contact.append(foot_contact)
+
     gpos_loss = np.concatenate(gpos_loss, axis=0)
     gquat_loss = np.concatenate(gquat_loss, axis=0)
 
@@ -808,6 +829,19 @@ def eval_on_dataset(config, data_loader, model, trans_len,
     npss_weights = np.concatenate(npss_weights, axis=0)
     npss_weights = npss_weights / np.sum(npss_weights)      # (batch, dim)
     npss_loss = np.sum(npss_loss * npss_weights, axis=-1)   # (batch, )
+
+    if save_json:
+        all_pos = torch.cat(all_pos, dim=0)
+        all_rot = torch.cat(all_rot, dim=0)
+        all_pos_new = torch.cat(all_pos_new, dim=0)
+        all_rot_new = torch.cat(all_rot_new, dim=0)
+        all_foot_contact = torch.cat(all_foot_contact, dim=0)
+
+        json_path = f"./lafan1_context_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}_gt.json"
+        save_data_to_json(json_path, all_pos, all_rot, all_foot_contact, parents)
+
+        json_path = f"./lafan1_context_model_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}.json"
+        save_data_to_json(json_path, all_pos_new, all_rot_new, all_foot_contact, parents)
 
     if debug:
         total_loss = gpos_loss + gquat_loss + npss_loss
@@ -828,6 +862,9 @@ def eval_on_dataset(config, data_loader, model, trans_len,
 def eval_on_dataset_rep1(config, data_loader, model, trans_len,
                     debug=False, post_process=True,
                     save_json=False, json_outputs=None):
+    if save_json is True and json_outputs is not None:
+        raise ValueError("save_json and json_outputs cannot be True at the same time")
+
     device = data_loader.dataset.device
     dtype = data_loader.dataset.dtype
 
@@ -838,8 +875,8 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
     window_len = context_len + trans_len + 2
 
     mean, std = get_train_stats_torch(config, dtype, device)
-    # mean_rmi, std_rmi = rmi.get_rmi_benchmark_stats_torch(
-    #     config, dtype, device)
+    mean_rmi, std_rmi = rmi.get_rmi_benchmark_stats_torch(
+        config, dtype, device)
 
     # attention mask
     atten_mask = get_attention_mask(
@@ -850,12 +887,22 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
     smooth_losses = []
     p_losses = []
 
-    rep1_mask = torch.tensor(dr.representation1_partial_mask()[:, np.newaxis], dtype=dtype, device=device)
+    rep1_mask = torch.tensor(dr.representation1_partial_mask(use_ik_targets=False)[:, np.newaxis], dtype=dtype, device=device)
 
     if save_json:
         all_rep1 = []
         all_rep1_new = []
         all_foot_contact = []
+    if json_outputs is not None:
+        import json
+        new_results = json.load(open(json_outputs, 'r'))
+        all_global_pos_new = torch.tensor(new_results['global positions'], device=device)
+        # all_global_rot_new = torch.tensor(new_results['global rotations'], device=device)
+
+        gpos_loss = []
+        gquat_loss = []
+        npss_loss = []
+        npss_weights = []
 
     for i, data in enumerate(data_loader, 0):
         (positions, rotations, global_positions, global_rotations,
@@ -874,26 +921,45 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
             rotations, positions, parents)
         rep1 = dr.representation1_torch(global_positions, global_rotations, dtype=dtype, device=device)
 
-        x_orig, y, rep1_new = evaluate_rep1(model, rep1, seq_slice, indices, mean, std, atten_mask, post_process)
-        gpos_new = dr.representation1_backwards_partial_torch(rep1_new, dtype=dtype, device=device)
+        if json_outputs is not None:
+            global_pos_new = all_global_pos_new[i*data_loader.batch_size:(i+1)*data_loader.batch_size, :, :]
+            # global_rot_new = all_global_rot_new[i*data_loader.batch_size:(i+1)*data_loader.batch_size, :, :, :]
+            global_rot_new = None
 
-        global_positions = global_positions*rep1_mask
+            (gpos_batch_loss, gquat_batch_loss,
+            npss_batch_loss, npss_batch_weights) = \
+                benchmark.get_rmi_style_batch_loss_global(
+                    positions, rotations, global_pos_new, global_rot_new, parents,
+                    context_len, target_idx, mean_rmi, std_rmi
+            )
 
-        # Get losses instead of metrics (can't use benchmark.get_rmi_style_batch_loss)
-        r_loss = train_utils.cal_r_loss(x_orig, y, seq_slice, indices)
-        smooth_loss = train_utils.cal_smooth_loss(gpos_new, seq_slice)
-        p_loss = train_utils.cal_p_loss(
-            global_positions, gpos_new, seq_slice)
+            gpos_loss.append(gpos_batch_loss)
+            gquat_loss.append(gquat_batch_loss)
+            npss_loss.append(npss_batch_loss)
+            npss_weights.append(npss_batch_weights)
+            data_indexes.extend(data_idx.tolist())
 
-        r_losses.append(r_loss.item())
-        smooth_losses.append(smooth_loss.item())
-        p_losses.append(p_loss.item())
-        data_indexes.extend(data_idx.tolist())
+        else:
+            x_orig, y, rep1_new = evaluate_rep1(model, rep1, seq_slice, indices, mean, std, atten_mask, post_process)
+            gpos_new = dr.representation1_backwards_partial_torch(rep1_new, dtype=dtype, device=device)
 
-        if save_json:
-            all_rep1.append(rep1.cpu().numpy())
-            all_rep1_new.append(rep1_new.cpu().numpy())
-            all_foot_contact.append(foot_contact.cpu().numpy())
+            global_positions = global_positions*rep1_mask
+
+            # Get losses instead of metrics (can't use benchmark.get_rmi_style_batch_loss)
+            r_loss = train_utils.cal_r_loss(x_orig, y, seq_slice, indices)
+            smooth_loss = train_utils.cal_smooth_loss(gpos_new, seq_slice)
+            p_loss = train_utils.cal_p_loss(
+                global_positions, gpos_new, seq_slice)
+
+            r_losses.append(r_loss.item())
+            smooth_losses.append(smooth_loss.item())
+            p_losses.append(p_loss.item())
+            data_indexes.extend(data_idx.tolist())
+
+            if save_json:
+                all_rep1.append(rep1.cpu().numpy())
+                all_rep1_new.append(rep1_new.cpu().numpy())
+                all_foot_contact.append(foot_contact.cpu().numpy())
     
     if save_json:
         all_rep1 = np.concatenate(all_rep1, axis=0)
@@ -906,32 +972,23 @@ def eval_on_dataset_rep1(config, data_loader, model, trans_len,
         json_path = f"./{config['name']}_benchmark_{trans_len}_{data_indexes[0]}-{data_indexes[-1]}.json"
         save_rep1_data_to_json(json_path, all_rep1_new, all_foot_contact, parents)
 
+    if json_outputs is not None:
+        gpos_loss = np.concatenate(gpos_loss, axis=0)
+        # gquat_loss = np.concatenate(gquat_loss, axis=0)
+
+        # npss_loss = np.concatenate(npss_loss, axis=0)           # (batch, dim)
+        # npss_weights = np.concatenate(npss_weights, axis=0)
+        # npss_weights = npss_weights / np.sum(npss_weights)      # (batch, dim)
+        # npss_loss = np.sum(npss_loss * npss_weights, axis=-1)   # (batch, )
+        # return gpos_loss.mean(), gquat_loss.mean(), npss_loss.sum()
+        return gpos_loss.mean(), 0, 0
+
     return np.mean(r_losses), np.mean(p_losses), np.mean(smooth_losses)
 
         # pos_new, rot_new = evaluate(
         #     model, positions, rotations, seq_slice,
         #     indices, mean, std, atten_mask, post_process)
 
-    #     (gpos_batch_loss, gquat_batch_loss,
-    #      npss_batch_loss, npss_batch_weights) = \
-    #         benchmark.get_rmi_style_batch_loss(
-    #             positions, rotations, pos_new, rot_new, parents,
-    #             context_len, target_idx, mean_rmi, std_rmi
-    #     )
-
-    #     gpos_loss.append(gpos_batch_loss)
-    #     gquat_loss.append(gquat_batch_loss)
-    #     npss_loss.append(npss_batch_loss)
-    #     npss_weights.append(npss_batch_weights)
-    #     data_indexes.extend(data_idx.tolist())
-
-    # gpos_loss = np.concatenate(gpos_loss, axis=0)
-    # gquat_loss = np.concatenate(gquat_loss, axis=0)
-
-    # npss_loss = np.concatenate(npss_loss, axis=0)           # (batch, dim)
-    # npss_weights = np.concatenate(npss_weights, axis=0)
-    # npss_weights = npss_weights / np.sum(npss_weights)      # (batch, dim)
-    # npss_loss = np.sum(npss_loss * npss_weights, axis=-1)   # (batch, )
 
     # if debug:
     #     total_loss = gpos_loss + gquat_loss + npss_loss
